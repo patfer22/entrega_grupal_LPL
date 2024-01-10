@@ -1,0 +1,607 @@
+---
+title: "TRABAJO FINAL"
+author: "Laura Díaz (DNI: 47410711-Y), Patricia Fernández (DNI: 47412079-V) y Luis Tapia (DNI: 02778931-W)"
+format: revealjs
+editor: visual
+---
+
+# Índice
+
+Paquetes
+
+Tablas de datos
+
+Paso de tablas a tidy_data
+
+Cuestiones y gráficas
+
+Cuestiones propias
+
+
+# Paquetes
+
+```{r Paquetes}
+#| echo: true
+
+rm(list = ls()) # Borramos variables de environment
+library(tidyverse)
+library(glue)
+library(readxl)
+```
+
+
+# Tablas de datos
+
+```{r Datos}
+#| echo: true
+# NO TOQUES NADA
+datos_elecciones <- read_csv(file = "./datos/datos_elecciones_brutos.csv")
+cod_mun <- read_csv(file = "./datos/cod_mun.csv")
+encuestas <- read_csv(file = "./datos/historical_surveys.csv")
+siglas <- read_csv(file = "./datos/siglas.csv")
+
+```
+
+
+# Paso de tablas a tidy_data
+
+Modificaremos las tablas de datos_elecciones y encuestas a tidy_data.
+
+## datos_elecciones
+
+Comenzamos pasando aquellas variables lógicas a númericas y pivotamos columnas a filas para que cada variable esté en una columna.
+
+Además, eliminamos aquella información redundante o que no aporta (vuelta, código_distrito_electoral y tipo_eleccion) pues muestran el mismo valor para todas las filas).
+
+------------------------------------------------------------------------
+
+Al comienzo del trabajo se menciona que se quiere trabajar en la ventana que comprende elecciones desde 2008 al 2019. Siendo esas las fechas comprendidas en la tabla, no necesitamos borrar o eliminar ningún año.
+
+```{r Elecciones tidydata 1}
+#| echo: true
+
+tidy_elecciones <-
+  datos_elecciones |> 
+  mutate(across(where(is.logical), as.numeric)) |> 
+  pivot_longer(cols = -("tipo_eleccion":"votos_candidaturas"),
+               names_to = "partidos", values_to = "votos", values_drop_na = TRUE) |> 
+  select(-c(vuelta, codigo_distrito_electoral, tipo_eleccion))
+
+tidy_elecciones
+
+```
+
+------------------------------------------------------------------------
+
+Para que sea más legible y fácil a la hora de utilizarlo, creamos una nueva variable denominada "fecha" (anno y mes en una misma columna tomando como día el 1) y un único código de municipio denominado cod_mun (juntamos comunidad autónoma, provincia y municipio).
+
+Una vez creadas las nuevas variables, las situamos al comienzo de la tabla y eliminamos las columnas unidas (se podrían dejar las columnas pero como muestran la misma información que las nuevas variables y en las siguientes tablas tampoco las necesitamos, las eliminamos).
+
+------------------------------------------------------------------------
+
+Para unir los valores de las columnas hacemos uso del paquete "glue" indicando las columnas y uniendolas mediante "-" que es el separador seleccionado y que aparece en el resto de tablas (en "fecha" no lo hacemos puesto que lo hemos puesto en formato ymd).
+
+En este caso el orden en el que hemos puesto los valores en las nuevas variables importa puesto que nos ayudará y servirá cuando unamos o saquemos información compartida del resto de tablas.
+
+```{r Elecciones tidydata 2}
+#| echo: true
+
+tidy_elecciones <-
+  tidy_elecciones |> 
+  mutate(fecha = ymd(glue("{anno}{mes}01")),
+         cod_mun = glue("{codigo_ccaa}-{codigo_provincia}-{codigo_municipio}")) |> 
+  relocate(fecha, cod_mun, .before = everything()) |> 
+  select(-c(anno, mes, codigo_ccaa, codigo_provincia, codigo_municipio))
+
+tidy_elecciones
+
+```
+
+------------------------------------------------------------------------
+
+Además, puesto que hay una gran cantidad de partidos, uniremos aquellos con federaciones, sucursales u otros nombres pertenecientes a la misma unidad de partidos juntos y todo aquel que no pertenezca a los partidos previamente establecidos pasarán a formar parte del grupo "otros".
+
+```{r Elecciones tidydata 3}
+#| echo: true
+
+#importante revisar bien todos los partidos, en podemos hay que meter los de izquierda unida, los verdes, etc.
+
+tidy_elecciones <-
+  tidy_elecciones |>
+  mutate(siglas =
+           case_when(str_detect(partidos, "PARTIDO SOCIALISTA OBRERO|PARTIT DELS SOCIALISTES DE CATALUNYA|PARTIDO DOS SOCIALISTAS DE GALICIA") ~ "PSOE",
+                     str_detect(partidos, "PARTIDO POPULAR") ~ "PP",
+                     str_detect(partidos, "CIUDADANOS|CIUTADANS") ~ "CS",
+                     str_detect(partidos, "PARTIDO NACIONALISTA VASCO") ~ "PNV",
+                     str_detect(partidos, "BLOQUE NACIONALISTA GALEGO") ~ "BNG",
+                     str_detect(partidos, "COMPROMIS") ~ "CC",
+                     str_detect(partidos, "CONVERGENCIA I UNIO") ~ "CIU",
+                     str_detect(partidos, "PODEMOS|UNIDAS PODEMOS|UNIDOS PODEMOS|UNIDAS PODEMOS|EN COMÚ PODEM|IZQUIERDA UNIDA|ESQUERDA UNIDA|ESQUERRA UNIDA") ~ "UP",
+                     str_detect(partidos, "ESQUERRA REPUBLICANA DE CATALUNYA") ~ "ERC",
+                     str_detect(partidos, "EUSKAL HERRIA BILDU") ~ "EH-BILDU",
+                     str_detect(partidos, "MAS PAIS") ~ "MP",
+                     str_detect(partidos, "VOX") ~ "VOX",
+                     TRUE ~ "OTROS")) |> 
+  mutate(votos = sum(votos), .by = c(fecha, cod_mun, siglas)) |> 
+  distinct(fecha, cod_mun, siglas, .keep_all = TRUE) |> 
+  relocate (siglas, votos, .after = cod_mun)
+
+```
+
+------------------------------------------------------------------------
+
+Finalmente, para terminar de preparar la base, vamos a contabailizar los votos obtenidos por los distintos grupos de partidos. Añadimos otra variables además denominada votos validos compuesta por los votos de las candidaturas y votos en blanco para posibles operaciones futuras, además del porcentaje de votos obtenido para cada partido en dichas elecciones.
+
+```{r Elecciones tidydata 4}
+#| echo: true
+
+tidy_elecciones <-
+  tidy_elecciones |> 
+  mutate(votos = sum(votos), .by = c(fecha, cod_mun, siglas)) |> 
+  distinct(fecha, cod_mun, siglas, .keep_all = TRUE) |> 
+  mutate(votos_val = votos_candidaturas + votos_blancos, .by = c(fecha, cod_mun, siglas)) |>
+  mutate(p_votos = votos/votos_val, .by= c(fecha, cod_mun, siglas))
+
+```
+
+------------------------------------------------------------------------
+
+## encuestas
+
+En primer lugar, igual que sucedia con la tabla anterior, debemos pivotar las columnas a filas (las siglas de los partidos estan por columnas) y eliminamos la variable type_survey puesto que todas las encuestan son de tipo nacional.
+
+```{r Encuestas tidydata 1}
+#| echo: true
+
+tidy_encuestas <-
+  encuestas |> 
+  pivot_longer(cols = -c("type_survey":"turnout"),
+               names_to = "siglas", values_to = "intencion_voto", values_drop_na = TRUE)  |> 
+  select(-type_survey)
+  
+```
+
+------------------------------------------------------------------------
+
+De igual manera, debemos descartar todas aquellas encuestas anteriores a 2018 (utilizamos lubridate para seleccionar el año), que sean a pie de urna (exit_poll == TRUE), tengan un tamaño muestral inferior a 750 o desconocido y tengan 1 o menos días de trabajo de campo (field_date_to - field_date_from \<= 1).
+
+Al quedarnos sólo con aquellas encuentas que no son a pie de urna, podemos eliminar la columna puesto que en todas las filas muestra el mismo valor.
+
+Además, vamos a crear una nueva variable denominada field la cual indica los días de trabajo de campo en cada encuesta.
+
+```{r Encuestas tidydata 2}
+#| echo: true
+
+tidy_encuestas <-
+  tidy_encuestas |>
+  filter (lubridate::year(date_elec) >= 2018,
+          exit_poll == FALSE,
+          size >= 750,
+          !is.na(size),
+          (field_date_to-field_date_from) > 1) |> 
+  select(-exit_poll) |> 
+  mutate (field = field_date_to-field_date_from, .after = field_date_to)
+
+```
+
+
+# Cuestiones y gráficas
+
+## Cuestión 1
+
+¿Cómo se reparte el voto de partidos de ámbito nacional (PSOE, PP, VOX, CS, MP, UP-IU) frente a los partidos de corte autonómico o nacionalista?
+
+Se entiende que se pregunta por cómo se reparten los votos de forma global de las elecciones, aún así se responderá a la pregunta de forma total y también municipal, para el caso de que se quiera analizar algún municipio concreto, entendiendo en todo momento que para responder a esta pregunta es necesario conocer el porcentaje de votos de partidos nacionales y de partidos autonómicos.
+
+```{r Cuestión 1}
+#| echo: true
+#| code-fold: true
+
+# Caso municipal (hago el join para que se vea el nombre del municipio)
+tidy_elecciones |> 
+  inner_join(cod_mun, by = "cod_mun") |> 
+  mutate(ambito = case_when(str_detect(siglas,"PSOE|PP|VOX|CS|MP|UP") 
+                            ~ "NACIONAL",
+                            TRUE ~ "AUTONÓMICO")) |> 
+  mutate(p_votos_amb = sum(votos) / votos_val, .by = c(fecha, cod_mun, ambito)) |> 
+  distinct(fecha, cod_mun, ambito, .keep_all = TRUE) |> 
+  select(c(fecha, cod_mun, ambito, p_votos_amb, municipio))
+
+# Caso general
+tidy_elecciones |> 
+  mutate(ambito = case_when(str_detect(siglas,"PSOE|PP|VOX|CS|MP|UP") 
+                            ~ "NACIONAL",
+                            TRUE ~ "AUTONÓMICO")) |> 
+  mutate(votos_amb = sum(votos), .by = c(fecha, cod_mun, ambito)) |> 
+  distinct(fecha, cod_mun, ambito, .keep_all = TRUE) |> 
+  summarise(reparto = sum(votos_amb)/sum(votos_val), .by = c(fecha, ambito))
+
+
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 2
+
+¿Cuál es el partido ganador en los municipio de más de 100.000 habitantes de censo en cada una de las elecciones?
+
+Para responder, en primer lugar crearemos una función denominada n_votado la cual, dados dos vectores, los partidos y votos obtenidos por cada uno de ellos, devuelve el partido que ocupó la posición n, por defecto, n = 1 (ganador).
+
+```{r Cuestión 2.1}
+#| echo: true
+#| code-fold: true
+
+
+n_votado <- function(partidos, votos, n = 1) {
+  
+  datos <- tibble(partidos, votos) 
+  siglas <-
+    datos |>
+    slice_max(n = n, votos, with_ties = FALSE) |> 
+    slice_min(n = 1, votos, with_ties = FALSE) |> 
+    pull(partidos)
+  
+  return(siglas)
+}
+
+```
+
+------------------------------------------------------------------------
+
+A continuación, buscamos todos aquellos municipios con más de 100.000 habitantes de censo aplicando un filtro a nuestra tabla tidy_elecciones y, con un pull, obtenemos todos los codigos. Uniendo las tablas tidy_encuestas y cod_mun por el código de municipio obtenemos los nombres de dichos municipios
+
+```{r Cuestión 2.2}
+#| echo: true
+#| code-fold: true
+
+
+municipios_cien_mil <-
+  tidy_elecciones |> 
+  filter(censo >= 100000) |> 
+  distinct(cod_mun, .keep_all = TRUE) |> 
+  pull(cod_mun)
+municipios_cien_mil
+
+municipios <- tidy_elecciones |> 
+  inner_join(cod_mun, by = "cod_mun") |> 
+  filter (cod_mun %in% municipios_cien_mil)
+municipios
+
+```
+
+------------------------------------------------------------------------
+
+Finalmente, aplicamos a esta nueva tabla la función para hallar los partidos ganadores en cada uno de los municipios
+
+```{r Cuestión 2.3}
+#| echo: true
+#| code-fold: true
+
+
+elecciones_cien_mil <-
+  municipios |> 
+  mutate(ganador = n_votado(siglas, votos),
+         .by = c(fecha, cod_mun)) |> 
+  select(fecha, municipio, ganador, votos) |> 
+  distinct(fecha, municipio, .keep_all = TRUE)
+
+elecciones_cien_mil
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 3
+
+¿Qué partido fue el segundo cuando el primero fue el PSOE? ¿Y cuando el primero fue el PP?
+
+Como anteriormente ya hemos creado la función n_votado, la aplicamos a nuestra tabla tidy de elecciones creando dos nuevas variables, segundo y ganador y posteriormente nos quedamos solo con éstas y las fechas y códigos de municipios de las elecciones (puesto que para esta pregunta no necesitamos más información)
+
+```{r Cuestión 3.1}
+#| eval: false
+
+elecciones_pri_seg <-
+  tidy_elecciones |>
+  mutate(ganador = n_votado(siglas, votos),
+         segundo = n_votado(siglas, votos, n = 2),
+         .by = c(fecha, cod_mun)) |> 
+  select(fecha, cod_mun, ganador, segundo)
+
+elecciones_pri_seg
+
+```
+
+------------------------------------------------------------------------
+
+Finalmente, seleccionamos aquellos datos donde el PSOE ha quedado como ganador y hacemos recuento de cuantas veces ha quedado cada partido segundo (puesto que en una tabla contaríamos con muchísimas filas de información y de esta manera es más visual y fácil de comprender)
+
+Realizamos lo mismo con el PP.
+
+```{r Cuestión 3.2}
+#| eval: false
+
+
+PSOE <- elecciones_pri_seg |>
+  filter(ganador == "PSOE") |> 
+  count(segundo, sort = TRUE)
+
+PP <- elecciones_pri_seg |>
+  filter(ganador == "PP") |> 
+  count(segundo, sort = TRUE)
+
+PSOE
+PP
+
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 4
+
+¿En que municipios de más de 2000 habitantes de censo, provincias o autonomías la diferencia entre el ganador y el segundo es más elevada?
+
+------------------------------------------------------------------------
+
+## Cuestión 5
+
+¿Cuáles son los municipios con mayor porcentaje de votos nulos de España?
+
+```{r Cuestión 5}
+#| echo: true
+#| code-fold: true
+
+
+tidy_elecciones |> 
+  inner_join(cod_mun, by = "cod_mun") |> 
+  mutate(p_votos_nulos = votos_nulos / (votos_nulos + votos_val)) |> 
+  select(c(fecha, municipio, p_votos_nulos)) |> 
+  distinct(p_votos_nulos, .keep_all = TRUE) |> 
+  arrange(desc(p_votos_nulos))
+
+# Con esto ya se podría usar filters si queremos responder a la pregunta según la elección, poner rollo un top 5 municipios con mayor porcentaje, esas cosas
+
+
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 6
+
+¿En que sitios hay mayor participación? ¿Quién ganó en los sitios con mayor participación y donde menos? ¿A quién le beneficia la baja participación?
+
+```{r Cuestión 6}
+#| echo: true
+#| code-fold: true
+
+
+# Así para ver quién gana cuando hay mayor participación
+tidy_elecciones |> 
+  inner_join(cod_mun, by = "cod_mun") |> 
+  mutate(p_participacion = (votos_val + votos_nulos) / censo) |> 
+  slice_max(order_by = p_votos, by = c(fecha, municipio)) |> 
+  select(fecha, siglas, municipio, p_participacion) |>
+  arrange(desc(p_participacion))
+           
+# Así para ver quién gana cuando hay menor participación
+
+tidy_elecciones |> 
+  inner_join(cod_mun, by = "cod_mun") |> 
+  mutate(p_participacion = (votos_val + votos_nulos) / censo) |> 
+  slice_max(order_by = p_votos, by = c(fecha, municipio)) |> 
+  select(fecha, siglas, municipio, p_participacion) |>
+  arrange(p_participacion)
+
+# También se podría responder por fecha etc 
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 7
+
+¿Cómo analizar la relación entre censo y voto? ¿Es cierto que ciertos partidos ganan lo rural?
+
+------------------------------------------------------------------------
+
+## Cuestión 8
+
+¿Cómo calibrar el error de las encuestas? ¿Cómo visualizarlo? (las encuestas son la intención de voto a nivel nacional)
+
+Para calibrar el error de las encuestas se va a comparar la intención de voto con el porcentaje de voto recogido en las elecciones, para poder obtener el error como la diferencia entre el porcentaje que se estimaba y el porcentaje
+
+```{r Cuestión 8}
+#| echo: true
+#| code-fold: true
+
+
+tidy_encuestas |> 
+  filter(lubridate::year(date_elec) > 2007) |> 
+  mutate(p_votos_encuesta = mean(intencion_voto), .by = c(date_elec, siglas)) |>  
+  select(c(date_elec,siglas,p_votos_encuesta)) |>  
+  distinct(date_elec, siglas, .keep_all = TRUE) |> 
+  right_join(tidy_elecciones |>  
+               filter(lubridate::year(fecha) > 2018) |>  
+               mutate(votos_total = sum(votos), .by = fecha) |>  
+               mutate(votos = sum(votos), .by = c(fecha, siglas)) |>  
+               mutate(p_votos_elecciones = (votos / votos_total) * 100, .by = c(fecha, siglas)) |>  
+               distinct(fecha, siglas, .keep_all = TRUE), by = "siglas") |>  
+  select(c(fecha, siglas, p_votos_encuesta, p_votos_elecciones)) |> 
+  mutate(diferencia = abs(p_votos_encuesta - p_votos_elecciones), .by = fecha)
+
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 9
+
+¿En qué elección se equivocaron más las encuestas?
+
+Para poder responder a esta cuestión se utiliza la variable creada para la cuestión anterior y se agrupan los datos por fecha, habiendo datos únicamente de las dos elecciones de 2019, la de abril y la de noviembre
+
+```{r Cuestión 9}
+#| echo: true
+#| code-fold: true
+
+
+tidy_encuestas |> 
+  filter(lubridate::year(date_elec) > 2007) |>  
+  mutate(p_votos_encuesta = mean(intencion_voto), .by = c(date_elec, siglas)) |>  
+  select(c(date_elec,siglas,p_votos_encuesta)) |> 
+  distinct(date_elec, siglas, .keep_all = TRUE) |>  
+  right_join(tidy_elecciones |>  
+               filter(lubridate::year(fecha) > 2018) |>  
+               mutate(votos_total = sum(votos), .by = fecha) |>  
+               mutate(votos = sum(votos), .by = c(fecha, siglas)) |>  
+               mutate(p_votos_elecciones = (votos / votos_total) * 100, .by = c(fecha, siglas)) |>  
+               distinct(fecha, siglas, .keep_all = TRUE), by = "siglas") |>  
+  select(c(fecha, siglas, p_votos_encuesta, p_votos_elecciones)) |>  
+  mutate(diferencia = abs(p_votos_encuesta - p_votos_elecciones), .by = fecha) |> 
+  group_by(fecha) |>  
+  summarise(p_diferencia = mean(diferencia,na.rm = TRUE))
+
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 10
+
+¿Cómo se equivocaron las encuestas en partidos de ámbito nacional (PSOE, PP, VOX, CS, MP, UP-IU)?
+
+A esta cuestión se puede responder en el ámbito general o, como en la cuestión anterior, observando la diferencia según las distintas elecciones
+
+```{r cuestión 10}
+#| echo: true
+#| code-fold: true
+
+
+# Cómo se equivocaron si nos centramos en estos partidos en general
+
+tidy_encuestas |> 
+  filter(lubridate::year(date_elec) > 2007) |>  
+  mutate(p_votos_encuesta = mean(intencion_voto), .by = c(date_elec, siglas)) |>  
+  select(c(date_elec,siglas,p_votos_encuesta)) |>  
+  distinct(date_elec, siglas, .keep_all = TRUE) |>  
+
+  right_join(tidy_elecciones |>  
+               filter(lubridate::year(fecha) > 2018) |>  
+               mutate(votos_total = sum(votos), .by = fecha) |>  
+               mutate(votos = sum(votos), .by = c(fecha, siglas)) |>  
+               mutate(p_votos_elecciones = (votos / votos_total) * 100, .by = c(fecha, siglas)) |>  
+               distinct(fecha, siglas, .keep_all = TRUE), by = "siglas") |>  
+  mutate(ambito = case_when(str_detect(siglas,"PSOE|PP|VOX|CS|MP|UP") 
+                            ~ "NACIONAL",
+                            TRUE ~ "AUTONÓMICO")) |>  
+  filter(ambito != "AUTONÓMICO") |>  
+  select(c(fecha, siglas, p_votos_encuesta, p_votos_elecciones)) |>  
+  mutate(diferencia = abs(p_votos_encuesta - p_votos_elecciones), .by = fecha) |> 
+  group_by(fecha) |> 
+  summarise(p_diferencia = mean(diferencia,na.rm = TRUE))
+
+```
+
+------------------------------------------------------------------------
+
+```{r}
+# Cómo se equivocaron con cada partido en cada fecha
+#| echo: true
+#| code-fold: true
+
+
+tidy_encuestas |> 
+  filter(lubridate::year(date_elec) > 2007) |>  
+  mutate(p_votos_encuesta = mean(intencion_voto), .by = c(date_elec, siglas)) |>  
+  select(c(date_elec,siglas,p_votos_encuesta)) |>  
+  distinct(date_elec, siglas, .keep_all = TRUE) |> 
+
+  right_join(tidy_elecciones |>  
+               filter(lubridate::year(fecha) > 2018) |>  
+               mutate(votos_total = sum(votos), .by = fecha) |>  
+               mutate(votos = sum(votos), .by = c(fecha, siglas)) |> 
+               mutate(p_votos_elecciones = (votos / votos_total) * 100, .by = c(fecha, siglas)) |> 
+               distinct(fecha, siglas, .keep_all = TRUE), by = "siglas") |>  
+  mutate(ambito = case_when(str_detect(siglas,"PSOE|PP|VOX|CS|MP|UP") 
+                            ~ "NACIONAL",
+                            TRUE ~ "AUTONÓMICO")) |>  
+  filter(ambito != "AUTONÓMICO") |>  
+  select(c(fecha, siglas, p_votos_encuesta, p_votos_elecciones)) |>  
+  mutate(diferencia = abs(p_votos_encuesta - p_votos_elecciones), .by = fecha) |> 
+  group_by(fecha, siglas) |>  
+  summarise(p_diferencia = mean(diferencia,na.rm = TRUE))
+
+tidy_elecciones |>  
+  filter(siglas== "COMPROMIS")
+```
+
+------------------------------------------------------------------------
+
+## Cuestión 11
+
+¿Qué casas encuestadoras acertaron más y cuales se desviaron más de los resultados?
+
+Observando las casas encuestadoras y los periódicos, y usando de igual forma la variable diferencia creada para las cuestiones anteriores, en el caso de los periódicos y los medios de divulgación, usando el siguiente código se puede observar cuáles aciertan y cuáles se equivocan más:
+
+```{r Cuestión 11.1}
+#| echo: true
+#| code-fold: true
+
+
+# No sé si se refiere al periódico o al pollster así que hago los dos
+# Periódico
+tidy_encuestas |> 
+  filter(lubridate::year(date_elec) > 2007) |> 
+  mutate(p_votos_encuesta = mean(intencion_voto), .by = c(date_elec, siglas, media)) |>  
+  select(c(date_elec,siglas,media, p_votos_encuesta)) |> 
+  distinct(date_elec, siglas, media, .keep_all = TRUE) |> 
+  right_join(tidy_elecciones |> 
+               filter(lubridate::year(fecha) > 2018) |>  
+               mutate(votos_total = sum(votos), .by = fecha) |> 
+               mutate(votos = sum(votos), .by = c(fecha, siglas)) |>  
+               mutate(p_votos_elecciones = (votos / votos_total) * 100, .by = c(fecha, siglas)) |>  
+               distinct(fecha, siglas, .keep_all = TRUE), by = "siglas") |> 
+  select(c(fecha, siglas,media, p_votos_encuesta, p_votos_elecciones)) |> 
+  mutate(diferencia = abs(p_votos_encuesta - p_votos_elecciones), .by = fecha) |> 
+  group_by(media) |> 
+  summarise(p_diferencia = mean(diferencia,na.rm = TRUE)) |> 
+  arrange(desc(p_diferencia))
+
+```
+
+------------------------------------------------------------------------
+
+Y para las empresas encargadas de realizar las encuestas:
+
+```{r Cuestión 11.2}
+#| echo: true
+#| code-fold: true
+
+
+# Pollster
+tidy_encuestas |> 
+  filter(lubridate::year(date_elec) > 2007) |> 
+  mutate(p_votos_encuesta = mean(intencion_voto), .by = c(date_elec, siglas, pollster)) |> 
+  select(c(date_elec,siglas,pollster, p_votos_encuesta)) |>  
+  distinct(date_elec, siglas,pollster, .keep_all = TRUE) |> 
+  right_join(tidy_elecciones |>  
+               filter(lubridate::year(fecha) > 2018) |> 
+               mutate(votos_total = sum(votos), .by = fecha) |>  
+               mutate(votos = sum(votos), .by = c(fecha, siglas)) |>  
+               mutate(p_votos_elecciones = (votos / votos_total) * 100, .by = c(fecha, siglas)) |>  
+               distinct(fecha, siglas, .keep_all = TRUE), by = "siglas") |> 
+  select(c(fecha, siglas,pollster, p_votos_encuesta, p_votos_elecciones)) |>  
+  mutate(diferencia = abs(p_votos_encuesta - p_votos_elecciones), .by = fecha) |> 
+  group_by(pollster) |> 
+  summarise(p_diferencia = mean(diferencia,na.rm = TRUE)) |> 
+  arrange(desc(p_diferencia))
+```
+
+------------------------------------------------------------------------
+
+En cuanto a la divulgación de los resultados de las encuestas, la sexta es el canal de difusión de encuestas con una mayor media de error entre ambas elecciones de las que se disponen datos (las elecciones de 2019), con un 4.64 por ciento de error en el porcentaje de los votos, frente a okdiario y la cadena cope que son las cadenas con menor error, con unos valores cercanos al 1.8 por ciento de error.
+
+Haciendo referencia a las cadenas que realizan las encuestas, la empresa invymark es la asociada con los resultados difundidos por la sexta, es la empresa con un mayor error, frente a las empresas sociométrica e ipsos que son las asociadas con okdiario y la cadena cope, respectivamente, que tienen el menor error.
+
+------------------------------------------------------------------------
+
+## Cuestiones propias
+
+Análisis de las elecciones
+
+¿En qué medida afectaría tener otro sistema de conteo de votos en las elecciones españolas entre el 2008 y el 2019?
